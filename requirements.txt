@@ -1,0 +1,11 @@
+pandas
+numpy
+scikit-learn==1.7.0
+scipy
+nltk
+joblib
+streamlit
+matplotlib
+seaborn
+PyPDF2
+sentence-transformers
