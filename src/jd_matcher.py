@@ -1,35 +1,33 @@
-﻿from __future__ import annotations
-
-from functools import lru_cache
+from __future__ import annotations
 
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
 
-from preprocessing import clean_resume_text
-from skill_extractor import find_missing_skills
-
-
-EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
-
-
-@lru_cache(maxsize=1)
-def _load_sentence_transformer():
-    from sentence_transformers import SentenceTransformer
-
-    return SentenceTransformer(EMBEDDING_MODEL_NAME)
+try:
+    from .embedding_model import EMBEDDING_MODEL_NAME, encode_texts, get_embedding_backend
+    from .preprocessing import clean_resume_text
+    from .skill_extractor import find_missing_skills
+except ImportError:  # pragma: no cover - supports Streamlit/script path imports
+    from embedding_model import EMBEDDING_MODEL_NAME, encode_texts, get_embedding_backend
+    from preprocessing import clean_resume_text
+    from skill_extractor import find_missing_skills
 
 
-def _embedding_similarity(resume_text: str, job_description: str) -> float:
-    model = _load_sentence_transformer()
-    embeddings = model.encode([resume_text, job_description], normalize_embeddings=True)
-    return float(np.dot(embeddings[0], embeddings[1]))
+def _faiss_similarity(resume_text: str, job_description: str) -> float:
+    try:
+        import faiss
+    except ImportError as exc:
+        raise ImportError(
+            "FAISS is required for JD matching. Install dependencies with `pip install -r requirements.txt`."
+        ) from exc
 
+    embeddings = encode_texts([resume_text, job_description], normalize=True)
+    resume_embedding = np.ascontiguousarray(embeddings[0:1], dtype=np.float32)
+    jd_embedding = np.ascontiguousarray(embeddings[1:2], dtype=np.float32)
 
-def _tfidf_similarity(resume_text: str, job_description: str) -> float:
-    vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), max_features=5000)
-    matrix = vectorizer.fit_transform([resume_text, job_description])
-    return float(cosine_similarity(matrix[0], matrix[1])[0][0])
+    index = faiss.IndexFlatIP(jd_embedding.shape[1])
+    index.add(jd_embedding)
+    scores, _ = index.search(resume_embedding, 1)
+    return float(scores[0][0])
 
 
 def calculate_jd_match_score(resume_text: object, job_description: object) -> dict[str, object]:
@@ -42,14 +40,9 @@ def calculate_jd_match_score(resume_text: object, job_description: object) -> di
     if not cleaned_jd:
         raise ValueError("Job description is empty. Please enter a job description.")
 
-    method = f"sentence-transformers ({EMBEDDING_MODEL_NAME})"
-    fallback_reason = None
-    try:
-        similarity = _embedding_similarity(cleaned_resume, cleaned_jd)
-    except Exception as exc:
-        similarity = _tfidf_similarity(cleaned_resume, cleaned_jd)
-        method = "tf-idf fallback"
-        fallback_reason = str(exc)
+    similarity = _faiss_similarity(cleaned_resume, cleaned_jd)
+    backend = get_embedding_backend()
+    method = f"faiss + {'onnx ' if backend == 'onnx' else ''}sentence-transformers ({EMBEDDING_MODEL_NAME})"
 
     semantic_similarity_score = round(max(0.0, min(similarity, 1.0)) * 100, 2)
     skills = find_missing_skills(resume_text, job_description)
@@ -69,10 +62,9 @@ def calculate_jd_match_score(resume_text: object, job_description: object) -> di
         "semantic_similarity_score": semantic_similarity_score,
         "skill_match_percentage": skill_match_percentage,
         "method": method,
-        "fallback_reason": fallback_reason,
+        "fallback_reason": None,
         "matched_keywords": skills["matched_skills"],
         "missing_keywords": skills["missing_skills"],
         "resume_skills": skills["resume_skills"],
         "jd_skills": skills["jd_skills"],
     }
-

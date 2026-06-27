@@ -9,3 +9,8 @@ matplotlib
 seaborn
 PyPDF2
 sentence-transformers
+xgboost
+faiss-cpu
+onnxruntime
+optimum[onnxruntime]
+spacy>=3.8.2

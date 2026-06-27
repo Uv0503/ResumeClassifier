@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import re
 from pathlib import Path
@@ -10,7 +10,10 @@ try:
 except Exception:  # pragma: no cover - nltk data may not be installed yet
     stopwords = None
 
-from utils import DATA_DIR
+try:
+    from .utils import DATA_DIR
+except ImportError:  # pragma: no cover - supports script path imports
+    from utils import DATA_DIR
 
 
 RESUME_PROFILE_COLUMNS = [

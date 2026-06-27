@@ -1,18 +1,15 @@
-﻿# AI Resume Screening and Job Fit Prediction System v2
+# AI Resume Screening and Job Fit Prediction System v2
 
-This v2 project upgrades the resume screening workflow into a job-role prediction and resume-to-job fit system. The model predicts practical roles such as `Software Engineer`, `Full Stack Developer`, `Machine Learning Engineer`, `DevOps Engineer`, and related job titles, then compares the resume against a job description with semantic matching and skill overlap.
+This project predicts the best-fit job role from resume text and compares a resume with a job description. The ML pipeline now uses semantic embeddings, XGBoost, spaCy skill extraction, and FAISS similarity search instead of TF-IDF and basic keyword matching.
 
-## Problem Statement
+## What Changed
 
-Older resume screening datasets often group resumes into coarse labels that are not specific enough for technical hiring. This version predicts a concrete job role from resume profile text, then evaluates fit against a job description using semantic similarity and matched/missing skills.
-
-## Why Job-Role Prediction Is Better
-
-Coarse resume labels answer: "What general area does this resume look like?"
-
-Job-role prediction answers: "What job role is this candidate most aligned with?"
-
-That makes the output more useful for screening because recruiters and interviewers usually compare candidates against concrete roles, not generic resume groups.
+- Resume text is converted into dense vectors with `sentence-transformers/all-MiniLM-L6-v2`.
+- Job-role classification is trained with `XGBClassifier` on those embedding vectors.
+- Rare job roles are handled with `compute_sample_weight(class_weight="balanced")`, so underrepresented roles matter during training.
+- Skill extraction uses a spaCy `EntityRuler` NER-style pipeline with technical skill patterns and sentence context filters.
+- Resume-to-JD semantic matching uses FAISS `IndexFlatIP` over normalized embeddings for fast cosine-style similarity.
+- Optional ONNX Runtime support can speed up local CPU embedding inference.
 
 ## Dataset
 
@@ -28,7 +25,7 @@ The target column is:
 job_position_name
 ```
 
-The training input is a leakage-free `profile_text` field built from resume-side columns when present:
+The model input is a leakage-free `profile_text` field built from resume-side columns when present:
 
 ```text
 skills
@@ -40,36 +37,7 @@ major_field_of_studies
 educational_institution_name
 ```
 
-The pipeline cleans hidden BOM characters and known typo columns, including:
-
-```text
-educationaL_requirements -> educational_requirements
-experiencere_requirement -> experience_requirement
-responsibilities.1 -> job_responsibilities
-```
-
-The following job-side or target-related fields are not used as model input:
-
-```text
-job_position_name
-matched_score
-skills_required
-educational_requirements
-experience_requirement
-job_responsibilities
-```
-
-## Features
-
-- Predicts a specific job role from resume text.
-- Uses the trained ML model directly for role prediction; no hardcoded role boosting is used.
-- Shows prediction confidence when the classifier supports it.
-- Shows the top 3 predicted job roles.
-- Compares resume and JD with `sentence-transformers/all-MiniLM-L6-v2`.
-- Falls back to TF-IDF cosine similarity if the semantic matcher fails.
-- Extracts resume skills, JD skills, matched skills, and missing skills.
-- Combines semantic similarity and skill overlap into a final JD score.
-- Keeps the pipeline explainable and interview-friendly.
+Job-side or target-related fields are not used as model input.
 
 ## Project Structure
 
@@ -79,88 +47,78 @@ resume-screening-ml-v2/
 |   |-- streamlit_app.py
 |-- data/
 |   |-- resume_data.csv
-|-- legacy_v1/
-|   |-- data/
-|   |-- models/
-|   |-- reports/
 |-- models/
 |   |-- job_role_classifier.pkl
-|   |-- job_role_vectorizer.pkl
 |   |-- job_role_label_encoder.pkl
+|   |-- job_role_embedding_config.json
 |   |-- job_role_model_report.json
-|-- notebooks/
-|   |-- 01_job_role_prediction_training.ipynb
+|   |-- sentence_transformer_onnx/        # optional after export
 |-- reports/
 |-- src/
-|   |-- preprocessing.py
-|   |-- train_model.py
-|   |-- predict.py
+|   |-- embedding_model.py
+|   |-- export_onnx_model.py
 |   |-- jd_matcher.py
+|   |-- predict.py
+|   |-- preprocessing.py
 |   |-- skill_extractor.py
+|   |-- train_model.py
 |   |-- utils.py
-|-- README.md
 |-- requirements.txt
-|-- .gitignore
 ```
 
-## Model Training Process
-
-1. Load `data/resume_data.csv`.
-2. Clean column names and fix known typo columns.
-3. Build `profile_text` from resume-side fields only.
-4. Clean text while preserving technical tokens such as `C++`, `C#`, `Node.js`, `React.js`, `Python`, `Java`, `SQL`, `AWS`, `Docker`, `Kubernetes`, `Machine Learning`, `NLP`, `FastAPI`, `MongoDB`, and `PostgreSQL`.
-5. Drop rows with empty profile text or empty target labels.
-6. Remove classes with fewer than 2 samples so stratified splitting is valid.
-7. Encode `job_position_name` labels.
-8. Convert profile text to TF-IDF features.
-9. Compare these classifiers:
-
-```python
-LogisticRegression(max_iter=2000, class_weight="balanced")
-LinearSVC(class_weight="balanced")
-RandomForestClassifier(n_estimators=300, random_state=42, class_weight="balanced")
-MultinomialNB()
-```
-
-10. Compare models using weighted F1-score.
-11. Save Logistic Regression as the final model, along with the vectorizer, label encoder, and report.
-
-## Evaluation Metrics
-
-Each model is evaluated with:
-
-- Accuracy
-- Weighted precision
-- Weighted recall
-- Weighted F1-score
-- Classification report
-
-Models are compared with weighted F1-score because it is more reliable than accuracy when job-role classes are imbalanced. Logistic Regression is saved as the final classifier so the app can use probability-based confidence scores.
-
-Note: The job-role model achieved very high validation performance on the structured `resume_data.csv` dataset. This may be because the dataset contains highly role-specific resume fields. Real-world resumes can be noisier, so the app also shows top predictions, confidence, JD match score, matched skills, and missing skills instead of relying only on one label.
-
-## Training
-
-Install dependencies:
+## Install
 
 ```bash
 pip install -r requirements.txt
 ```
 
-Run training:
+If spaCy was already installed and fails with a NumPy binary compatibility error, reinstall from `requirements.txt` so `spacy>=3.8.2` and the installed NumPy version agree.
+
+## Optional ONNX Export
+
+Run this once after installing dependencies if you want faster CPU embedding inference:
+
+```bash
+python src/export_onnx_model.py
+```
+
+This writes the optimized Sentence Transformer files to:
+
+```text
+models/sentence_transformer_onnx/
+```
+
+The shared embedding helper automatically prefers that ONNX model when it exists. If it is missing, the project falls back to the normal Torch Sentence Transformer backend.
+
+## Training
 
 ```bash
 python src/train_model.py
 ```
 
+Training now does this:
+
+1. Loads and cleans `data/resume_data.csv`.
+2. Builds leakage-free resume `profile_text`.
+3. Removes classes with fewer than 2 samples so stratified splitting is valid.
+4. Encodes resume text with `all-MiniLM-L6-v2` embeddings.
+5. Computes balanced sample weights for imbalanced job-role classes.
+6. Trains XGBoost with `multi:softprob` for top-role probabilities.
+7. Saves the classifier, label encoder, embedding config, and evaluation reports.
+
 Expected output artifacts:
 
 ```text
 models/job_role_classifier.pkl
-models/job_role_vectorizer.pkl
 models/job_role_label_encoder.pkl
+models/job_role_embedding_config.json
 models/job_role_model_report.json
+reports/job_role_classification_report.json
+reports/job_role_classification_report.txt
+reports/job_role_model_comparison.csv
 ```
+
+`models/job_role_vectorizer.pkl` is obsolete and is no longer used.
 
 ## Running the Streamlit App
 
@@ -170,7 +128,7 @@ streamlit run app/streamlit_app.py
 
 The app shows:
 
-- Predicted Job Role
+- Predicted job role
 - Prediction confidence
 - Top 3 predicted job roles
 - Semantic similarity score
@@ -185,107 +143,37 @@ The app shows:
 
 ## JD Matching
 
-Job-role prediction and JD matching are separate parts of the system.
+Job-role prediction and JD matching are separate steps.
 
-The model predicts a job role from resume profile text using TF-IDF and ML classifiers. JD matching compares the resume against a specific job description using sentence-transformer embeddings and skill-overlap scoring.
+The model predicts a role from resume embeddings. JD matching compares the resume and job description by embedding both texts, normalizing the vectors, and searching with FAISS `IndexFlatIP`.
 
-The main JD score is calculated as:
+The final score is still:
 
 ```text
 final_jd_score = 0.7 * semantic_similarity_score + 0.3 * skill_match_percentage
 ```
 
-Where:
+Skill overlap is based on spaCy EntityRuler entities labeled as technical skills.
 
-```text
-skill_match_percentage = matched_required_skills / total_required_skills * 100
+## Smoke Tests
+
+After installing dependencies and training the model:
+
+```bash
+python -c "from src.predict import predict_job_role; print(predict_job_role('Python React Docker AWS machine learning engineer'))"
 ```
 
-If the semantic matcher fails, the app falls back to TF-IDF similarity and shows a warning that the match score may be less accurate.
-
-## Frontend Test Cases
-
-### Test Case 1: SDE / Full Stack Resume
-
-Resume:
-
-```text
-Software engineering student with experience in C++, Python, Go, JavaScript, React.js, Node.js, Express.js, MongoDB, PostgreSQL, FastAPI, Docker, Git, REST APIs, machine learning, FAISS, Sentence Transformers, and full-stack application development. Built trading systems, video platforms, RAG document Q&A assistants, and secure banking systems.
+```bash
+python -c "from src.jd_matcher import calculate_jd_match_score; print(calculate_jd_match_score('Python Docker AWS ML', 'Need Python, AWS, Docker'))"
 ```
 
-JD:
-
-```text
-We are hiring a Software Development Engineer Intern with strong data structures and algorithms, full-stack development, backend APIs, React.js, Node.js, FastAPI, Python, C++, MongoDB, PostgreSQL, Docker, Git, and machine learning knowledge.
+```bash
+python -c "from src.skill_extractor import extract_skills; print(extract_skills('Built APIs with Python, FastAPI, Docker, Kubernetes and AWS'))"
 ```
 
-Expected:
+## Notes
 
-- Predicted Job Role: Full Stack Developer, Senior Software Engineer, AI Engineer, ML Engineer, or a similar technical role
-- Top 3 predicted roles shown
-- JD match score: medium/high
-- Matched and missing skills displayed clearly
-
-### Test Case 2: ML Engineer Resume
-
-Resume:
-
-```text
-Machine learning engineer with experience in Python, Pandas, NumPy, Scikit-learn, TensorFlow, PyTorch, NLP, embeddings, model training, feature engineering, classification, regression, and model evaluation.
-```
-
-JD:
-
-```text
-Looking for a Machine Learning Engineer with Python, Scikit-learn, TensorFlow, PyTorch, NLP, embeddings, feature engineering, and model deployment experience.
-```
-
-Expected:
-
-- Predicted Job Role: Machine Learning Engineer / AI Engineer / Data Science Engineer
-- JD match score: high
-
-### Test Case 3: DevOps Resume
-
-Resume:
-
-```text
-DevOps engineer with experience in Docker, Kubernetes, AWS, CI/CD pipelines, Linux, monitoring, GitHub Actions, cloud deployments, infrastructure automation, and backend deployment workflows.
-```
-
-JD:
-
-```text
-Hiring DevOps Engineer with Docker, Kubernetes, AWS, CI/CD, Linux, cloud deployment, monitoring, and automation experience.
-```
-
-Expected:
-
-- Predicted Job Role: DevOps Engineer or related infrastructure role
-- JD match score: high
-
-## Limitations
-
-- The model quality depends on the coverage and consistency of `resume_data.csv`.
-- Rare job roles with fewer than 2 samples are removed before stratified splitting.
-- TF-IDF models are explainable but do not understand context as deeply as transformer classifiers.
-- Skill extraction uses a curated skill dictionary, so unseen tools may need to be added.
-- Sentence-transformer matching needs model download/cache access; TF-IDF is used if loading fails.
-
-## Future Improvements
-
-- Expand the skill dictionary from real job descriptions.
-- Add role-family grouping for similar labels.
-- Add confidence calibration for margin-based classifiers.
-- Add more training examples for rare roles.
-- Add model monitoring for prediction drift.
-
-## Resume Bullets
-
-- Upgraded a resume screening system to specific job-role prediction using TF-IDF and classical ML classifiers.
-- Built leakage-free resume profile features from skills, objectives, responsibilities, positions, and education fields.
-- Compared Logistic Regression, Linear SVM, Random Forest, and Naive Bayes using weighted F1-score.
-- Integrated JD matching with sentence-transformer semantic similarity, TF-IDF fallback, and skill-overlap scoring.
-- Developed a Streamlit interface showing predicted job role, top alternatives, JD match score, matched skills, missing skills, and screening recommendation.
-
-
+- The first run may download the Sentence Transformer model if it is not already cached.
+- FAISS and XGBoost are required for the upgraded runtime and training pipeline.
+- ONNX is optional but recommended for CPU speed.
+- Model quality still depends on the coverage and cleanliness of `resume_data.csv`.

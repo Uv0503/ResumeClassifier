@@ -1,63 +1,49 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import sys
 from pathlib import Path
 
 import pandas as pd
-
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, classification_report, precision_recall_fscore_support
 from sklearn.model_selection import train_test_split
-from sklearn.naive_bayes import MultinomialNB
 from sklearn.preprocessing import LabelEncoder
-from sklearn.svm import LinearSVC
+from sklearn.utils.class_weight import compute_sample_weight
+from xgboost import XGBClassifier
 
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.append(str(CURRENT_DIR))
 
-from preprocessing import load_job_role_data
-from utils import DATA_DIR, MODELS_DIR, REPORTS_DIR, ensure_directories, save_pickle
+try:
+    from .embedding_model import EMBEDDING_MODEL_NAME, encode_texts, get_embedding_backend
+    from .preprocessing import load_job_role_data
+    from .utils import DATA_DIR, MODELS_DIR, REPORTS_DIR, ensure_directories, save_pickle
+except ImportError:  # pragma: no cover - supports `python src/train_model.py`
+    from embedding_model import EMBEDDING_MODEL_NAME, encode_texts, get_embedding_backend
+    from preprocessing import load_job_role_data
+    from utils import DATA_DIR, MODELS_DIR, REPORTS_DIR, ensure_directories, save_pickle
 
 
 RANDOM_STATE = 42
 TEST_SIZE = 0.2
 DATASET_FILE = DATA_DIR / "resume_data.csv"
-FINAL_MODEL_NAME = "Logistic Regression"
+FINAL_MODEL_NAME = "XGBoost"
 
 
-def _build_models() -> dict[str, object]:
-    return {
-        "Logistic Regression": LogisticRegression(
-            max_iter=2000,
-            class_weight="balanced",
-            random_state=RANDOM_STATE,
-        ),
-        "Linear SVM": LinearSVC(
-            class_weight="balanced",
-            random_state=RANDOM_STATE,
-        ),
-        "Random Forest": RandomForestClassifier(
-            n_estimators=300,
-            random_state=RANDOM_STATE,
-            class_weight="balanced",
-            n_jobs=1,
-        ),
-        "Multinomial Naive Bayes": MultinomialNB(),
-    }
-
-
-def _build_vectorizer() -> TfidfVectorizer:
-    return TfidfVectorizer(
-        max_features=15000,
-        ngram_range=(1, 2),
-        stop_words="english",
-        min_df=2,
-        max_df=0.9,
-        sublinear_tf=True,
+def _build_model(num_classes: int) -> XGBClassifier:
+    return XGBClassifier(
+        objective="multi:softprob",
+        num_class=num_classes,
+        eval_metric="mlogloss",
+        tree_method="hist",
+        n_estimators=400,
+        max_depth=6,
+        learning_rate=0.05,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        random_state=RANDOM_STATE,
+        n_jobs=-1,
     )
 
 
@@ -163,7 +149,7 @@ def train_and_evaluate() -> dict[str, object]:
     y = label_encoder.fit_transform(df["job_position_name"])
     labels = label_encoder.classes_.tolist()
 
-    X_train, X_test, y_train, y_test = train_test_split(
+    X_train_text, X_test_text, y_train, y_test = train_test_split(
         df["profile_text"],
         y,
         test_size=TEST_SIZE,
@@ -171,43 +157,39 @@ def train_and_evaluate() -> dict[str, object]:
         stratify=y,
     )
 
-    vectorizer = _build_vectorizer()
-    X_train_tfidf = vectorizer.fit_transform(X_train)
-    X_test_tfidf = vectorizer.transform(X_test)
-    print(f"TF-IDF feature matrix: {X_train_tfidf.shape[1]} features")
+    embedding_backend = get_embedding_backend()
+    print(f"\nEmbedding resumes with {EMBEDDING_MODEL_NAME} ({embedding_backend} backend)...")
+    X_train = encode_texts(X_train_text.tolist(), normalize=True)
+    X_test = encode_texts(X_test_text.tolist(), normalize=True)
+    print(f"Embedding matrix: {X_train.shape[0]} rows x {X_train.shape[1]} dimensions")
 
-    results: list[dict[str, object]] = []
-    trained_models: dict[str, object] = {}
+    sample_weights = compute_sample_weight(class_weight="balanced", y=y_train)
+    model = _build_model(num_classes=len(labels))
 
-    for model_name, model in _build_models().items():
-        print(f"\nTraining {model_name}...")
-        model.fit(X_train_tfidf, y_train)
-        trained_models[model_name] = model
-        results.append(_evaluate_model(model_name, model, X_test_tfidf, y_test, labels))
+    print(f"\nTraining {FINAL_MODEL_NAME} with balanced sample weights...")
+    model.fit(X_train, y_train, sample_weight=sample_weights)
+    best_result = _evaluate_model(FINAL_MODEL_NAME, model, X_test, y_test, labels)
 
     results_df = pd.DataFrame(
-        [{k: v for k, v in _public_result(result).items() if k != "classification_report"} for result in results]
-    )
-    tie_break_priority = {
-        "Logistic Regression": 0,
-        "Linear SVM": 1,
-        "Multinomial Naive Bayes": 2,
-        "Random Forest": 3,
-    }
-    results_df["tie_break_priority"] = results_df["model"].map(tie_break_priority).fillna(99)
-    results_df = results_df.sort_values(
-        ["weighted_f1", "accuracy", "tie_break_priority"],
-        ascending=[False, False, True],
+        [{k: v for k, v in _public_result(best_result).items() if k != "classification_report"}]
     )
     results_df.to_csv(REPORTS_DIR / "job_role_model_comparison.csv", index=False)
 
-    best_model_name = FINAL_MODEL_NAME
-    best_model = trained_models[best_model_name]
-    best_result = next(result for result in results if result["model"] == best_model_name)
-
-    save_pickle(best_model, MODELS_DIR / "job_role_classifier.pkl")
-    save_pickle(vectorizer, MODELS_DIR / "job_role_vectorizer.pkl")
+    save_pickle(model, MODELS_DIR / "job_role_classifier.pkl")
     save_pickle(label_encoder, MODELS_DIR / "job_role_label_encoder.pkl")
+
+    embedding_config = {
+        "embedding_model_name": EMBEDDING_MODEL_NAME,
+        "embedding_backend": embedding_backend,
+        "normalize_embeddings": True,
+        "embedding_dimensions": int(X_train.shape[1]),
+        "classifier": FINAL_MODEL_NAME,
+        "class_imbalance_strategy": "compute_sample_weight(class_weight='balanced')",
+    }
+    (MODELS_DIR / "job_role_embedding_config.json").write_text(
+        json.dumps(embedding_config, indent=2),
+        encoding="utf-8",
+    )
 
     (REPORTS_DIR / "job_role_classification_report.txt").write_text(
         str(best_result["classification_report_text"]),
@@ -219,16 +201,17 @@ def train_and_evaluate() -> dict[str, object]:
     )
 
     summary = {
-        "best_model": best_model_name,
+        "best_model": FINAL_MODEL_NAME,
         "best_accuracy": float(best_result["accuracy"]),
         "best_weighted_f1": float(best_result["weighted_f1"]),
         "records_used": int(len(df)),
         "total_job_roles": int(df["job_position_name"].nunique()),
-        "model_results": [_public_result(result) for result in results],
+        "model_results": [_public_result(best_result)],
         "top_10_job_roles_by_count": role_counts.head(10).astype(int).to_dict(),
         "dataset_file": str(DATASET_FILE),
         "split_notes": split_notes,
         "original_total_job_roles": int(original_counts.shape[0]),
+        "embedding_config": embedding_config,
     }
     (MODELS_DIR / "job_role_model_report.json").write_text(
         json.dumps(summary, indent=2),
@@ -239,9 +222,9 @@ def train_and_evaluate() -> dict[str, object]:
         encoding="utf-8",
     )
 
-    print("\nModel comparison sorted by weighted F1-score:")
+    print("\nModel comparison:")
     print(results_df.to_string(index=False))
-    print(f"\nFinal saved model: {best_model_name}")
+    print(f"\nFinal saved model: {FINAL_MODEL_NAME}")
     print(f"Final model weighted F1-score: {best_result['weighted_f1']:.4f}")
     print(f"Final model accuracy: {best_result['accuracy']:.4f}")
     print(f"Saved job-role model artifacts and report to {MODELS_DIR}")
@@ -250,7 +233,5 @@ def train_and_evaluate() -> dict[str, object]:
 
 if __name__ == "__main__":
     train_and_evaluate()
-
-
 
 

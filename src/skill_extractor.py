@@ -1,50 +1,91 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
-import re
+from functools import lru_cache
 
 from scipy.sparse import csr_matrix
 
 
-SKILL_ALIASES: dict[str, list[str]] = {
-    "Python": ["python"],
-    "Java": ["java"],
-    "C++": ["c++", "cpp"],
-    "C#": ["c#", "c sharp", "csharp"],
-    "SQL": ["sql"],
-    "MySQL": ["mysql"],
-    "PostgreSQL": ["postgresql", "postgres"],
-    "MongoDB": ["mongodb", "mongo db"],
-    "Machine Learning": ["machine learning", "ml"],
-    "Deep Learning": ["deep learning", "dl"],
-    "NLP": ["nlp", "natural language processing"],
-    "TensorFlow": ["tensorflow", "tensor flow"],
-    "PyTorch": ["pytorch", "torch"],
-    "Scikit-learn": ["scikit-learn", "scikit learn", "sklearn"],
-    "Pandas": ["pandas"],
-    "NumPy": ["numpy", "num py"],
-    "Docker": ["docker"],
-    "Kubernetes": ["kubernetes", "k8s"],
-    "AWS": ["aws", "amazon web services"],
-    "Azure": ["azure"],
-    "GCP": ["gcp", "google cloud"],
-    "Git": ["git", "github"],
-    "GitHub Actions": ["github actions"],
-    "CI/CD": ["ci/cd", "ci cd", "cicd"],
-    "FastAPI": ["fastapi", "fast api"],
-    "Flask": ["flask"],
-    "Streamlit": ["streamlit"],
-    "Spring Boot": ["spring boot"],
-    "React.js": ["react.js", "reactjs", "react js", "react"],
-    "Node.js": ["node.js", "nodejs", "node js"],
-    "Express.js": ["express.js", "expressjs", "express js"],
-    "Kafka": ["kafka"],
-    "Redis": ["redis"],
-    "Linux": ["linux"],
-    "REST APIs": ["rest api", "rest apis", "restful api", "rest"],
-    "FAISS": ["faiss"],
-    "Sentence Transformers": ["sentence transformers", "sentence-transformers"],
+TECH_SKILL_LABEL = "TECH_SKILL"
+CONTEXT_WINDOW = 8
+CONTEXT_TERMS = {
+    "api",
+    "apis",
+    "built",
+    "develop",
+    "developed",
+    "developing",
+    "deployment",
+    "deployed",
+    "engineer",
+    "engineering",
+    "experience",
+    "framework",
+    "frameworks",
+    "hiring",
+    "knowledge",
+    "need",
+    "needs",
+    "platform",
+    "platforms",
+    "proficient",
+    "required",
+    "requires",
+    "skills",
+    "stack",
+    "technology",
+    "technologies",
+    "tool",
+    "tools",
+    "using",
+    "with",
 }
 
+SKILL_PATTERNS: dict[str, list[str]] = {
+    "Python": ["Python"],
+    "Java": ["Java"],
+    "JavaScript": ["JavaScript", "JS"],
+    "TypeScript": ["TypeScript", "TS"],
+    "C++": ["C++", "CPP"],
+    "C#": ["C#", "C Sharp", "CSharp"],
+    "SQL": ["SQL"],
+    "MySQL": ["MySQL"],
+    "PostgreSQL": ["PostgreSQL", "Postgres"],
+    "MongoDB": ["MongoDB", "Mongo DB"],
+    "Machine Learning": ["Machine Learning", "ML"],
+    "Deep Learning": ["Deep Learning", "DL"],
+    "NLP": ["NLP", "Natural Language Processing"],
+    "TensorFlow": ["TensorFlow", "Tensor Flow"],
+    "PyTorch": ["PyTorch", "Torch"],
+    "Scikit-learn": ["Scikit-learn", "Scikit learn", "sklearn"],
+    "Pandas": ["Pandas"],
+    "NumPy": ["NumPy", "Numpy"],
+    "Docker": ["Docker"],
+    "Kubernetes": ["Kubernetes", "K8s"],
+    "AWS": ["AWS", "Amazon Web Services"],
+    "Azure": ["Azure"],
+    "GCP": ["GCP", "Google Cloud"],
+    "Git": ["Git", "GitHub"],
+    "GitHub Actions": ["GitHub Actions"],
+    "CI/CD": ["CI/CD", "CI CD", "CICD"],
+    "FastAPI": ["FastAPI", "Fast API"],
+    "Flask": ["Flask"],
+    "Django": ["Django"],
+    "Streamlit": ["Streamlit"],
+    "Spring Boot": ["Spring Boot"],
+    "React.js": ["React.js", "ReactJS", "React JS", "React"],
+    "Node.js": ["Node.js", "NodeJS", "Node JS"],
+    "Express.js": ["Express.js", "ExpressJS", "Express JS"],
+    "Kafka": ["Kafka"],
+    "Redis": ["Redis"],
+    "Linux": ["Linux"],
+    "REST APIs": ["REST API", "REST APIs", "RESTful API"],
+    "GraphQL": ["GraphQL"],
+    "FAISS": ["FAISS"],
+    "Sentence Transformers": ["Sentence Transformers", "Sentence-Transformers"],
+    "ONNX Runtime": ["ONNX Runtime", "ONNX"],
+    "XGBoost": ["XGBoost", "XGBClassifier"],
+    "LightGBM": ["LightGBM"],
+}
 
 SKILL_FEATURES: list[str] = [
     "Java",
@@ -70,41 +111,61 @@ SKILL_FEATURES: list[str] = [
 ]
 
 
-def _normalize(text: object) -> str:
-    text = "" if text is None else str(text).lower()
-    replacements = {
-        "node.js": "nodejs",
-        "react.js": "reactjs",
-        "express.js": "expressjs",
-        "c++": " cpp ",
-        "c#": " csharp ",
-        "ci/cd": " cicd ",
-        "scikit-learn": "scikit learn",
-        "sentence-transformers": "sentence transformers",
-    }
-    for source, target in replacements.items():
-        text = text.replace(source, target)
-    text = re.sub(r"[^a-z0-9+#.\s-]", " ", text)
-    text = re.sub(r"[.;,:)\]}]", " ", text)
-    text = re.sub(r"[(\[{]", " ", text)
-    text = re.sub(r"[-_/]", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return f" {text} "
+@lru_cache(maxsize=1)
+def _load_skill_nlp():
+    try:
+        import spacy
+    except Exception as exc:
+        raise ImportError(
+            "spaCy is required for NER skill extraction. Install dependencies with `pip install -r requirements.txt`."
+        ) from exc
+
+    nlp = spacy.blank("en")
+    nlp.add_pipe("sentencizer")
+    ruler = nlp.add_pipe("entity_ruler", config={"overwrite_ents": True})
+    patterns = []
+    for canonical_skill, phrases in SKILL_PATTERNS.items():
+        for phrase in phrases:
+            patterns.append(
+                {
+                    "label": TECH_SKILL_LABEL,
+                    "pattern": phrase,
+                    "id": canonical_skill,
+                }
+            )
+    ruler.add_patterns(patterns)
+    return nlp
+
+
+def _has_skill_context(ent) -> bool:
+    doc_tokens = [token.text.lower() for token in ent.doc if not token.is_space]
+    if len(doc_tokens) <= 12:
+        return True
+
+    sentence = ent.sent if ent.sent is not None else ent.doc
+    tokens = [token.text.lower() for token in sentence if not token.is_space]
+    if any(token in CONTEXT_TERMS for token in tokens):
+        return True
+
+    start = max(ent.start - CONTEXT_WINDOW, 0)
+    end = min(ent.end + CONTEXT_WINDOW, len(ent.doc))
+    nearby = [token.text.lower() for token in ent.doc[start:end] if not token.is_space]
+    return any(token in CONTEXT_TERMS for token in nearby)
 
 
 def extract_skills(text: object) -> list[str]:
-    """Extract known technical skills from free-form text."""
-    normalized_text = _normalize(text)
-    found_skills: list[str] = []
+    """Extract technical skills from free-form text with a spaCy NER-style pipeline."""
+    text = "" if text is None else str(text)
+    if not text.strip():
+        return []
 
-    for skill, aliases in SKILL_ALIASES.items():
-        for alias in aliases:
-            normalized_alias = _normalize(alias).strip()
-            pattern = rf"(?<![a-z0-9]){re.escape(normalized_alias)}(?![a-z0-9])"
-            if re.search(pattern, normalized_text):
-                found_skills.append(skill)
-                break
-
+    nlp = _load_skill_nlp()
+    doc = nlp(text)
+    found_skills = {
+        ent.ent_id_ or ent.text
+        for ent in doc.ents
+        if ent.label_ == TECH_SKILL_LABEL and _has_skill_context(ent)
+    }
     return sorted(found_skills)
 
 

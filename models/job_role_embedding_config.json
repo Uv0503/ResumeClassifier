@@ -1,0 +1,8 @@
+{
+  "embedding_model_name": "all-MiniLM-L6-v2",
+  "embedding_backend": "torch",
+  "normalize_embeddings": true,
+  "embedding_dimensions": 384,
+  "classifier": "XGBoost",
+  "class_imbalance_strategy": "compute_sample_weight(class_weight='balanced')"
+}

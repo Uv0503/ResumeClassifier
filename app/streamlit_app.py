@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -125,7 +125,7 @@ if st.button("Analyze Resume", type="primary"):
             st.subheader("Screening Insights")
             st.write(f"Matching method: {match_result['method']}")
             if match_result.get("fallback_reason"):
-                st.warning(f"Semantic matcher failed, using TF-IDF fallback. Match score may be less accurate. Details: {match_result['fallback_reason']}")
+                st.warning(f"Semantic matcher failed. Match score could not use the FAISS semantic path. Details: {match_result['fallback_reason']}")
             st.write(f"Skills found in resume: {format_list(resume_skills)}")
             st.write(f"Skills required by JD: {format_list(match_result['jd_skills'])}")
             st.write(f"Matched skills: {format_list(match_result['matched_keywords'])}")
