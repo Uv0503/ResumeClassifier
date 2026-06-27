@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 from functools import lru_cache
 
 from scipy.sparse import csr_matrix
 
+try:
+    from .utils import DATA_DIR
+except ImportError:  # pragma: no cover - supports script path imports
+    from utils import DATA_DIR
+
 
 TECH_SKILL_LABEL = "TECH_SKILL"
+SKILL_PATTERNS_PATH = DATA_DIR / "skills_patterns.json"
 CONTEXT_WINDOW = 8
 CONTEXT_TERMS = {
     "api",
@@ -40,53 +47,6 @@ CONTEXT_TERMS = {
     "with",
 }
 
-SKILL_PATTERNS: dict[str, list[str]] = {
-    "Python": ["Python"],
-    "Java": ["Java"],
-    "JavaScript": ["JavaScript", "JS"],
-    "TypeScript": ["TypeScript", "TS"],
-    "C++": ["C++", "CPP"],
-    "C#": ["C#", "C Sharp", "CSharp"],
-    "SQL": ["SQL"],
-    "MySQL": ["MySQL"],
-    "PostgreSQL": ["PostgreSQL", "Postgres"],
-    "MongoDB": ["MongoDB", "Mongo DB"],
-    "Machine Learning": ["Machine Learning", "ML"],
-    "Deep Learning": ["Deep Learning", "DL"],
-    "NLP": ["NLP", "Natural Language Processing"],
-    "TensorFlow": ["TensorFlow", "Tensor Flow"],
-    "PyTorch": ["PyTorch", "Torch"],
-    "Scikit-learn": ["Scikit-learn", "Scikit learn", "sklearn"],
-    "Pandas": ["Pandas"],
-    "NumPy": ["NumPy", "Numpy"],
-    "Docker": ["Docker"],
-    "Kubernetes": ["Kubernetes", "K8s"],
-    "AWS": ["AWS", "Amazon Web Services"],
-    "Azure": ["Azure"],
-    "GCP": ["GCP", "Google Cloud"],
-    "Git": ["Git", "GitHub"],
-    "GitHub Actions": ["GitHub Actions"],
-    "CI/CD": ["CI/CD", "CI CD", "CICD"],
-    "FastAPI": ["FastAPI", "Fast API"],
-    "Flask": ["Flask"],
-    "Django": ["Django"],
-    "Streamlit": ["Streamlit"],
-    "Spring Boot": ["Spring Boot"],
-    "React.js": ["React.js", "ReactJS", "React JS", "React"],
-    "Node.js": ["Node.js", "NodeJS", "Node JS"],
-    "Express.js": ["Express.js", "ExpressJS", "Express JS"],
-    "Kafka": ["Kafka"],
-    "Redis": ["Redis"],
-    "Linux": ["Linux"],
-    "REST APIs": ["REST API", "REST APIs", "RESTful API"],
-    "GraphQL": ["GraphQL"],
-    "FAISS": ["FAISS"],
-    "Sentence Transformers": ["Sentence Transformers", "Sentence-Transformers"],
-    "ONNX Runtime": ["ONNX Runtime", "ONNX"],
-    "XGBoost": ["XGBoost", "XGBClassifier"],
-    "LightGBM": ["LightGBM"],
-}
-
 SKILL_FEATURES: list[str] = [
     "Java",
     "Python",
@@ -111,6 +71,16 @@ SKILL_FEATURES: list[str] = [
 ]
 
 
+def _load_skill_patterns() -> list[dict[str, str]]:
+    if not SKILL_PATTERNS_PATH.exists():
+        raise FileNotFoundError(f"Missing skill patterns file: {SKILL_PATTERNS_PATH}")
+
+    patterns = json.loads(SKILL_PATTERNS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(patterns, list):
+        raise ValueError("Skill patterns file must contain a JSON list of EntityRuler patterns.")
+    return patterns
+
+
 @lru_cache(maxsize=1)
 def _load_skill_nlp():
     try:
@@ -122,18 +92,8 @@ def _load_skill_nlp():
 
     nlp = spacy.blank("en")
     nlp.add_pipe("sentencizer")
-    ruler = nlp.add_pipe("entity_ruler", config={"overwrite_ents": True})
-    patterns = []
-    for canonical_skill, phrases in SKILL_PATTERNS.items():
-        for phrase in phrases:
-            patterns.append(
-                {
-                    "label": TECH_SKILL_LABEL,
-                    "pattern": phrase,
-                    "id": canonical_skill,
-                }
-            )
-    ruler.add_patterns(patterns)
+    ruler = nlp.add_pipe("entity_ruler", config={"overwrite_ents": True, "phrase_matcher_attr": "LOWER"})
+    ruler.add_patterns(_load_skill_patterns())
     return nlp
 
 
@@ -154,13 +114,12 @@ def _has_skill_context(ent) -> bool:
 
 
 def extract_skills(text: object) -> list[str]:
-    """Extract technical skills from free-form text with a spaCy NER-style pipeline."""
+    """Extract technical skills from free-form text with spaCy EntityRuler NER."""
     text = "" if text is None else str(text)
     if not text.strip():
         return []
 
-    nlp = _load_skill_nlp()
-    doc = nlp(text)
+    doc = _load_skill_nlp()(text)
     found_skills = {
         ent.ent_id_ or ent.text
         for ent in doc.ents

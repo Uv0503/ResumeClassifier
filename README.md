@@ -1,19 +1,19 @@
 # AI Resume Screening and Job Fit Prediction System v2
 
-This project predicts the best-fit job role from resume text and compares a resume with a job description. The ML pipeline now uses semantic embeddings, XGBoost, spaCy skill extraction, and FAISS similarity search instead of TF-IDF and basic keyword matching.
+This project predicts the best-fit job role from resume text and compares a resume with a job description. The upgraded pipeline uses a repository-local Sentence Transformer, XGBoost, spaCy EntityRuler skill extraction, ONNX Runtime, and FAISS instead of TF-IDF and hardcoded keyword matching.
 
 ## What Changed
 
-- Resume text is converted into dense vectors with `sentence-transformers/all-MiniLM-L6-v2`.
-- Job-role classification is trained with `XGBClassifier` on those embedding vectors.
-- Rare job roles are handled with `compute_sample_weight(class_weight="balanced")`, so underrepresented roles matter during training.
-- Skill extraction uses a spaCy `EntityRuler` NER-style pipeline with technical skill patterns and sentence context filters.
-- Resume-to-JD semantic matching uses FAISS `IndexFlatIP` over normalized embeddings for fast cosine-style similarity.
-- Optional ONNX Runtime support can speed up local CPU embedding inference.
+- `download_model.py` saves `all-MiniLM-L6-v2` locally to `models/all-MiniLM-L6-v2`.
+- Resume text is converted into dense vectors with the local Sentence Transformer model.
+- Job-role classification is trained with `XGBClassifier` on those dense embeddings.
+- Rare job roles are handled with `compute_sample_weight(class_weight="balanced")` during training.
+- Skill extraction uses spaCy `EntityRuler` patterns loaded from `data/skills_patterns.json`.
+- JD semantic matching embeds text with the ONNX-preferred local model and searches job-description vectors with FAISS `IndexFlatIP`.
 
 ## Dataset
 
-The training dataset is expected at:
+Training data is expected at:
 
 ```text
 data/resume_data.csv
@@ -37,8 +37,6 @@ major_field_of_studies
 educational_institution_name
 ```
 
-Job-side or target-related fields are not used as model input.
-
 ## Project Structure
 
 ```text
@@ -47,12 +45,14 @@ resume-screening-ml-v2/
 |   |-- streamlit_app.py
 |-- data/
 |   |-- resume_data.csv
+|   |-- skills_patterns.json
 |-- models/
+|   |-- all-MiniLM-L6-v2/
+|   |-- sentence_transformer_onnx/
 |   |-- job_role_classifier.pkl
 |   |-- job_role_label_encoder.pkl
 |   |-- job_role_embedding_config.json
 |   |-- job_role_model_report.json
-|   |-- sentence_transformer_onnx/        # optional after export
 |-- reports/
 |-- src/
 |   |-- embedding_model.py
@@ -63,32 +63,19 @@ resume-screening-ml-v2/
 |   |-- skill_extractor.py
 |   |-- train_model.py
 |   |-- utils.py
+|-- download_model.py
 |-- requirements.txt
 ```
 
-## Install
+## Install And Prepare Models
 
 ```bash
 pip install -r requirements.txt
-```
-
-If spaCy was already installed and fails with a NumPy binary compatibility error, reinstall from `requirements.txt` so `spacy>=3.8.2` and the installed NumPy version agree.
-
-## Optional ONNX Export
-
-Run this once after installing dependencies if you want faster CPU embedding inference:
-
-```bash
+python download_model.py
 python src/export_onnx_model.py
 ```
 
-This writes the optimized Sentence Transformer files to:
-
-```text
-models/sentence_transformer_onnx/
-```
-
-The shared embedding helper automatically prefers that ONNX model when it exists. If it is missing, the project falls back to the normal Torch Sentence Transformer backend.
+`download_model.py` skips work if `models/all-MiniLM-L6-v2` already exists. The ONNX export is used by JD matching for faster CPU inference.
 
 ## Training
 
@@ -101,63 +88,34 @@ Training now does this:
 1. Loads and cleans `data/resume_data.csv`.
 2. Builds leakage-free resume `profile_text`.
 3. Removes classes with fewer than 2 samples so stratified splitting is valid.
-4. Encodes resume text with `all-MiniLM-L6-v2` embeddings.
+4. Encodes resume text with `models/all-MiniLM-L6-v2`.
 5. Computes balanced sample weights for imbalanced job-role classes.
-6. Trains XGBoost with `multi:softprob` for top-role probabilities.
+6. Trains XGBoost with `multi:softprob`.
 7. Saves the classifier, label encoder, embedding config, and evaluation reports.
 
-Expected output artifacts:
+`models/job_role_vectorizer.pkl` has been removed and is no longer saved or loaded.
 
-```text
-models/job_role_classifier.pkl
-models/job_role_label_encoder.pkl
-models/job_role_embedding_config.json
-models/job_role_model_report.json
-reports/job_role_classification_report.json
-reports/job_role_classification_report.txt
-reports/job_role_model_comparison.csv
-```
-
-`models/job_role_vectorizer.pkl` is obsolete and is no longer used.
-
-## Running the Streamlit App
+## Running The App
 
 ```bash
 streamlit run app/streamlit_app.py
 ```
 
-The app shows:
-
-- Predicted job role
-- Prediction confidence
-- Top 3 predicted job roles
-- Semantic similarity score
-- Skill match percentage
-- Final JD match score
-- Matching method
-- Skills found in resume
-- Skills required by JD
-- Matched skills
-- Missing skills
-- Final screening recommendation
+The app shows the predicted job role, confidence, top 3 roles, semantic JD similarity, skill match percentage, matched skills, missing skills, and final recommendation.
 
 ## JD Matching
 
-Job-role prediction and JD matching are separate steps.
+JD matching embeds the resume and job description with the local ONNX Sentence Transformer, normalizes the vectors, creates a FAISS `IndexFlatIP` index for job descriptions, and searches that index for the highest semantic match.
 
-The model predicts a role from resume embeddings. JD matching compares the resume and job description by embedding both texts, normalizing the vectors, and searching with FAISS `IndexFlatIP`.
-
-The final score is still:
+The final score is:
 
 ```text
 final_jd_score = 0.7 * semantic_similarity_score + 0.3 * skill_match_percentage
 ```
 
-Skill overlap is based on spaCy EntityRuler entities labeled as technical skills.
+Skill overlap is based on spaCy EntityRuler entities loaded from `data/skills_patterns.json`.
 
 ## Smoke Tests
-
-After installing dependencies and training the model:
 
 ```bash
 python -c "from src.predict import predict_job_role; print(predict_job_role('Python React Docker AWS machine learning engineer'))"
@@ -173,7 +131,6 @@ python -c "from src.skill_extractor import extract_skills; print(extract_skills(
 
 ## Notes
 
-- The first run may download the Sentence Transformer model if it is not already cached.
-- FAISS and XGBoost are required for the upgraded runtime and training pipeline.
-- ONNX is optional but recommended for CPU speed.
-- Model quality still depends on the coverage and cleanliness of `resume_data.csv`.
+- The trained local XGBoost model currently reports accuracy `0.8591` and weighted F1 `0.8627` on the validation split.
+- Model quality depends on the coverage and cleanliness of `data/resume_data.csv`.
+- `xgboost`, `spacy`, `faiss-cpu`, and `onnxruntime` are required runtime dependencies.

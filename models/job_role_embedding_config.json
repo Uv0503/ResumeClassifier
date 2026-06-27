@@ -1,6 +1,6 @@
 {
   "embedding_model_name": "all-MiniLM-L6-v2",
-  "embedding_backend": "torch",
+  "embedding_backend": "local",
   "normalize_embeddings": true,
   "embedding_dimensions": 384,
   "classifier": "XGBoost",

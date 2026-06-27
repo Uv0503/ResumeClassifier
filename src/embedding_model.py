@@ -12,39 +12,52 @@ except ImportError:  # pragma: no cover - supports `python src/*.py`
 
 
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
+LOCAL_MODEL_DIR = MODELS_DIR / EMBEDDING_MODEL_NAME
 ONNX_MODEL_DIR = MODELS_DIR / "sentence_transformer_onnx"
 EMBEDDING_BATCH_SIZE = 64
+
+
+def _has_sentence_transformer_model(model_dir: Path = LOCAL_MODEL_DIR) -> bool:
+    return model_dir.exists() and (model_dir / "modules.json").exists()
 
 
 def _has_onnx_model(model_dir: Path = ONNX_MODEL_DIR) -> bool:
     return model_dir.exists() and any(model_dir.rglob("*.onnx"))
 
 
+def _missing_model_message() -> str:
+    return (
+        f"Missing local Sentence Transformer model at {LOCAL_MODEL_DIR}. "
+        "Run `python download_model.py` from the project root first."
+    )
+
+
 @lru_cache(maxsize=2)
-def _load_sentence_transformer(prefer_onnx: bool = True):
+def _load_sentence_transformer(prefer_onnx: bool = False):
     from sentence_transformers import SentenceTransformer
 
     if prefer_onnx and _has_onnx_model():
         return SentenceTransformer(str(ONNX_MODEL_DIR), backend="onnx", local_files_only=True)
-    try:
-        return SentenceTransformer(EMBEDDING_MODEL_NAME, local_files_only=True)
-    except Exception:
-        return SentenceTransformer(EMBEDDING_MODEL_NAME)
+
+    if not _has_sentence_transformer_model():
+        raise FileNotFoundError(_missing_model_message())
+
+    return SentenceTransformer(str(LOCAL_MODEL_DIR), local_files_only=True)
 
 
-def get_embedding_backend(prefer_onnx: bool = True) -> str:
+def get_embedding_backend(prefer_onnx: bool = False) -> str:
     if prefer_onnx and _has_onnx_model():
         return "onnx"
-    return "torch"
+    return "local"
 
 
 def encode_texts(
     texts: list[object] | tuple[object, ...],
     normalize: bool = True,
     batch_size: int = EMBEDDING_BATCH_SIZE,
-    prefer_onnx: bool = True,
+    prefer_onnx: bool = False,
 ) -> np.ndarray:
-    """Convert text into Sentence Transformer embeddings as float32 arrays."""
+    """Convert text into local Sentence Transformer embeddings as float32 arrays."""
     clean_texts = ["" if text is None else str(text) for text in texts]
     model = _load_sentence_transformer(prefer_onnx=prefer_onnx)
     embeddings = model.encode(
@@ -54,5 +67,3 @@ def encode_texts(
         show_progress_bar=len(clean_texts) > batch_size,
     )
     return np.asarray(embeddings, dtype=np.float32)
-
-

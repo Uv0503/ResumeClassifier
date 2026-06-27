@@ -12,22 +12,38 @@ except ImportError:  # pragma: no cover - supports Streamlit/script path imports
     from skill_extractor import find_missing_skills
 
 
-def _faiss_similarity(resume_text: str, job_description: str) -> float:
+def _load_faiss():
     try:
         import faiss
     except ImportError as exc:
         raise ImportError(
             "FAISS is required for JD matching. Install dependencies with `pip install -r requirements.txt`."
         ) from exc
+    return faiss
 
-    embeddings = encode_texts([resume_text, job_description], normalize=True)
-    resume_embedding = np.ascontiguousarray(embeddings[0:1], dtype=np.float32)
-    jd_embedding = np.ascontiguousarray(embeddings[1:2], dtype=np.float32)
 
-    index = faiss.IndexFlatIP(jd_embedding.shape[1])
-    index.add(jd_embedding)
-    scores, _ = index.search(resume_embedding, 1)
-    return float(scores[0][0])
+def build_jd_faiss_index(job_descriptions: list[str]):
+    """Encode job descriptions with local ONNX Sentence Transformers and add them to FAISS."""
+    faiss = _load_faiss()
+    jd_embeddings = encode_texts(job_descriptions, normalize=True, prefer_onnx=True)
+    jd_embeddings = np.ascontiguousarray(jd_embeddings, dtype=np.float32)
+    index = faiss.IndexFlatIP(jd_embeddings.shape[1])
+    index.add(jd_embeddings)
+    return index, jd_embeddings
+
+
+def search_job_descriptions(resume_text: str, job_descriptions: list[str], top_k: int = 1):
+    """Return FAISS semantic similarity scores for the best matching job descriptions."""
+    index, _ = build_jd_faiss_index(job_descriptions)
+    resume_embedding = encode_texts([resume_text], normalize=True, prefer_onnx=True)
+    resume_embedding = np.ascontiguousarray(resume_embedding, dtype=np.float32)
+    scores, indices = index.search(resume_embedding, min(top_k, len(job_descriptions)))
+    return scores[0], indices[0]
+
+
+def _faiss_similarity(resume_text: str, job_description: str) -> float:
+    scores, _ = search_job_descriptions(resume_text, [job_description], top_k=1)
+    return float(scores[0])
 
 
 def calculate_jd_match_score(resume_text: object, job_description: object) -> dict[str, object]:
@@ -41,8 +57,8 @@ def calculate_jd_match_score(resume_text: object, job_description: object) -> di
         raise ValueError("Job description is empty. Please enter a job description.")
 
     similarity = _faiss_similarity(cleaned_resume, cleaned_jd)
-    backend = get_embedding_backend()
-    method = f"faiss + {'onnx ' if backend == 'onnx' else ''}sentence-transformers ({EMBEDDING_MODEL_NAME})"
+    backend = get_embedding_backend(prefer_onnx=True)
+    method = f"faiss + {'onnx ' if backend == 'onnx' else 'local '}sentence-transformers ({EMBEDDING_MODEL_NAME})"
 
     semantic_similarity_score = round(max(0.0, min(similarity, 1.0)) * 100, 2)
     skills = find_missing_skills(resume_text, job_description)
